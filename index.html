@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Radio</title>
+
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="theme-color" content="#ff2ea6">
+
+<style>
+:root{--pink:#ff2ea6}
+html,body{margin:0;height:100%;background:#000;overflow:hidden}
+#container{position:relative;width:100%;height:100%}
+video{width:100%;height:100%;object-fit:cover;background:#000}
+
+/* Play/Pause overlay background (visible when paused, transparent when playing) */
+#startOverlay{
+  pointer-events:none;
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.55);z-index:7;
+  transition: background .2s ease;
+}
+#startOverlay.playing{background:rgba(0,0,0,0);}
+
+/* Giant toggle button */
+#toggleBtn{
+  pointer-events:auto;
+  width:40vh;height:40vh;max-width:420px;max-height:420px;
+  min-width:220px;min-height:220px;
+  background:#fff;border:14px solid var(--pink);
+  border-radius:50%;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+}
+#toggleBtn:active{transform:scale(.98)}
+
+/* Icons (pure CSS) */
+#toggleBtn .icon{display:block;position:relative;width:0;height:0}
+/* Play triangle */
+#toggleBtn.play .icon{
+  margin-left:18px;
+  border-top:60px solid transparent;
+  border-bottom:60px solid transparent;
+  border-left:96px solid #000;
+}
+/* Pause bars */
+#toggleBtn.pause .icon{
+  width:84px;height:120px;
+}
+#toggleBtn.pause .icon:before,
+#toggleBtn.pause .icon:after{
+  content:"";
+  position:absolute;top:0;
+  width:26px;height:120px;background:#000;border-radius:8px;
+}
+#toggleBtn.pause .icon:before{left:0}
+#toggleBtn.pause .icon:after{right:0}
+
+/* Loading (non-blocking) */
+#loading{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  display:none;flex-direction:column;align-items:center;gap:18px;
+  color:var(--pink);font:900 clamp(24px,4vw,48px)/1.2 system-ui,Arial;
+  z-index:10;pointer-events:none;text-align:center
+}
+.spinner{
+  width:60px;height:60px;border:8px solid rgba(255,46,166,.25);
+  border-top-color:var(--pink);border-radius:50%;
+  animation:spin 1s linear infinite
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* Streaming title (visible while playing; hidden when paused) */
+#title{
+  position:absolute;top:24px;left:50%;transform:translateX(-50%);
+  color:var(--pink);font:900 clamp(28px,5vw,64px)/1.2 system-ui,Arial;
+  display:none;z-index:9;pointer-events:none;white-space:nowrap
+}
+
+/* Controls hidden until first play */
+.controls.hidden{display:none !important;}
+
+/* Arrows (kept for feature parity; disabled since single stream) */
+.nav{
+  position:absolute;top:50%;transform:translateY(-50%);
+  width:20vh;height:20vh;min-width:96px;min-height:96px;
+  background:#fff;border:10px solid var(--pink);
+  border-radius:18px;cursor:not-allowed;z-index:8;
+  display:flex;align-items:center;justify-content:center;
+  opacity:.35;
+}
+.nav::before{
+  font-family:system-ui,Arial,sans-serif;font-weight:900;
+  font-size:clamp(72px,10vh,160px);color:#000;line-height:1;
+}
+#prev{left:24px} #prev::before{content:"◀";}
+#next{right:24px} #next::before{content:"▶";}
+
+/* Home */
+#home{
+  position:absolute;top:18px;right:18px;width:96px;height:96px;
+  background:#fff;border:10px solid var(--pink);
+  border-radius:18px;cursor:pointer;z-index:9;
+  display:flex;align-items:center;justify-content:center
+}
+#home svg{width:78%;height:78%}
+</style>
+</head>
+<body>
+<div id="container">
+  <video id="audioEl" playsinline></video>
+
+  <div id="goodbye" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:#000;z-index:50;color:#ff2ea6;font:900 clamp(28px,5vw,72px)/1.2 system-ui,Arial;text-align:center;">Closed</div>
+
+<div id="startOverlay">
+    <button id="toggleBtn" class="play" aria-label="Play/Pause"><span class="icon" aria-hidden="true"></span></button>
+  </div>
+
+  <div id="title">Kan Bet</div>
+  <div id="loading"><div>Loading / טוען</div><div class="spinner"></div></div>
+
+  <button id="prev" class="nav controls hidden" aria-label="Previous (disabled)"></button>
+  <button id="next" class="nav controls hidden" aria-label="Next (disabled)"></button>
+
+  <button id="home" class="controls hidden" aria-label="Home">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#000" d="M12 3.2 2.5 11.2c-.3.3-.5.7-.5 1.1 0 .8.6 1.4 1.4 1.4H5v7.1c0 .7.6 1.3 1.3 1.3h3.9v-5.6h3.6v5.6h3.9c.7 0 1.3-.6 1.3-1.3v-7.1h1.6c.8 0 1.4-.6 1.4-1.4 0-.4-.2-.8-.5-1.1L12 3.2z"/>
+    </svg>
+  </button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+const STREAM_URL = 'https://kanbet.media.kan.org.il/hls/live/2024811/2024811/playlist.m3u8';
+
+const container = document.getElementById("container");
+const v = document.getElementById("audioEl");
+const overlay = document.getElementById("startOverlay");
+const btn = document.getElementById("toggleBtn");
+const title = document.getElementById("title");
+const loading = document.getElementById("loading");
+const controls = document.querySelectorAll(".controls");
+const homeBtn = document.getElementById("home");
+
+let hls = null;
+let startedOnce = false;
+
+function showControls(on) {
+  controls.forEach(el => el.classList.toggle("hidden", !on));
+}
+
+function showLoading(on) {
+  loading.style.display = on ? "flex" : "none";
+}
+
+function setPlayingUI(isPlaying) {
+  if (isPlaying) {
+    btn.classList.remove("play"); btn.classList.add("pause");
+    overlay.classList.add("playing");
+    title.style.display = "block";  // keep title visible while playing
+  } else {
+    btn.classList.remove("pause"); btn.classList.add("play");
+    overlay.classList.remove("playing");
+    title.style.display = "block";  // keep title visible when paused
+  }
+}
+
+function destroyHls() {
+  if (hls) {
+    try { hls.destroy(); } catch(e) {}
+    hls = null;
+  }
+}
+
+function attachStream() {
+  destroyHls();
+  try { v.pause(); } catch(e) {}
+  try { v.removeAttribute("src"); v.load(); } catch(e) {}
+
+  showLoading(true);
+
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls();
+    hls.loadSource(STREAM_URL);
+    hls.attachMedia(v);
+
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      v.play().catch(()=>{});
+    });
+
+    hls.on(Hls.Events.FRAG_LOADED, () => {
+      showLoading(false);
+    });
+
+    hls.on(Hls.Events.ERROR, (evt, data) => {
+      if (data && data.fatal) {
+        showLoading(true);
+      }
+    });
+  } else {
+    v.src = STREAM_URL;
+    v.oncanplay = () => {
+      v.play().catch(()=>{});
+      showLoading(false);
+    };
+  }
+}
+
+async function goFullscreen() {
+  try {
+    if (!document.fullscreenElement && container.requestFullscreen) {
+      await container.requestFullscreen();
+    }
+  } catch(e) {}
+}
+
+async function startPlayback() {
+  if (!startedOnce) {
+    startedOnce = true;
+    showControls(true);
+    attachStream();
+  }
+  v.muted = false; // unmuted
+  await goFullscreen();
+  try {
+    await v.play();
+  } catch(e) {}
+}
+
+function pausePlayback() {
+  try { v.pause(); } catch(e) {}
+}
+
+btn.addEventListener("click", async () => {
+  // Toggle play/pause
+  if (v.paused) {
+    await startPlayback();
+  } else {
+    pausePlayback();
+  }
+});
+
+// Keep UI in sync with actual state
+v.addEventListener("playing", () => {
+  showLoading(false);
+  setPlayingUI(true);
+});
+v.addEventListener("pause", () => {
+  showLoading(false);
+  title.style.display = "block";
+setPlayingUI(false);
+});
+v.addEventListener("waiting", () => showLoading(true));
+v.addEventListener("stalled", () => showLoading(true));
+v.addEventListener("canplay", () => showLoading(false));
+v.addEventListener("error", () => showLoading(false));
+
+// Home button
+homeBtn.addEventListener("click", () => {
+  try { v.pause(); } catch(e) {}
+  destroyHls();
+
+  // Attempt to close the tab/window (only works reliably if this page was opened by script).
+  let closed = false;
+  try { window.close(); closed = true; } catch(e) {}
+
+  // If blocked, simulate "closing" by blanking the page.
+  const goodbye = document.getElementById("goodbye");
+  if (!closed) {
+    try {
+      goodbye.style.display = "flex";
+      document.body.innerHTML = "";
+      document.body.style.margin = "0";
+      document.body.style.height = "100vh";
+      document.body.appendChild(goodbye);
+    } catch(e) {}
+    // Navigate to about:blank in this tab as a strong fallback.
+    try { window.location.replace("about:blank"); } catch(e) {}
+  }
+});
+
+// Initial state: controls hidden, paused UI
+showControls(false);
+title.style.display = "block";
+setPlayingUI(false);
+</script>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {});
+    });
+  }
+</script>
+
+</body>
+</html>
